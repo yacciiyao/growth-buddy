@@ -1,129 +1,200 @@
-import json
-import paho.mqtt.client as mqtt
+# -*- coding: utf-8 -*-
+# @File: client.py
+# @Author: yaccii
+# @Time: 2025-11-17 13:52
+# @Description:
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+模拟智能玩具终端，通过 MQTT 发送一段语音给 Smart Buddy 服务器，
+并接收回复语音，保存为本地 WAV 文件。
+
+使用前先确认：
+1）服务端 MQTT 网关已启动（run_mqtt_gateway.py）
+2）数据库中已有 child_id 对应的儿童
+3）有一段 16kHz/16bit/mono 的 WAV 文件用于测试
+"""
+from __future__ import annotations
+
+import argparse
 import os
-import warnings
+import threading
 import time
-import base64  # Import base64 for encoding binary data
+import wave
+from typing import Optional
 
-warnings.filterwarnings("ignore", category=DeprecationWarning)
+import paho.mqtt.client as mqtt
 
-# MQTT 配置
-MQTT_BROKER = "127.0.0.1"  # MQTT 服务的主机（本地服务）
-MQTT_PORT = 1883          # MQTT 服务的端口
-MQTT_TOPIC_IN = "chat/audio/in"  # 发送音频文件的主题
-MQTT_TOPIC_OUT = "chat/audio/out"  # 接收音频文件的主题
-MQTT_CLIENT_ID = f"publisher-client-{os.getpid()}"  # 发布者客户端 ID，使用进程ID防止冲突
 
-session_id = None  # 初始时没有 session_id
+def load_and_check_wav(path: str) -> bytes:
+    """读取 WAV 文件并校验为 16k / 单声道 / 16bit。"""
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"WAV 文件不存在: {path}")
 
-# 连接回调函数
-def on_connect(client, userdata, flags, rc, properties=None):
-    print(f"连接成功，返回码 {rc}")
-    # 连接成功后订阅响应主题
-    client.subscribe(MQTT_TOPIC_OUT)
-    # 开始发布音频文件
-    send_audio_file(client)
+    with wave.open(path, "rb") as wf:
+        nchannels = wf.getnchannels()
+        sampwidth = wf.getsampwidth()
+        framerate = wf.getframerate()
 
-# 发布回调函数
-def on_publish(client, userdata, mid):
-    print(f"消息已发布，消息 ID：{mid}")
+        if nchannels != 1:
+            raise ValueError(f"需要单声道(channels=1), 当前 channels={nchannels}")
+        if sampwidth != 2:
+            raise ValueError(f"需要 16bit 采样宽度(sampwidth=2), 当前 sampwidth={sampwidth}")
+        if framerate != 16000:
+            raise ValueError(f"需要采样率 16000Hz, 当前 framerate={framerate}")
 
-# 消息接收回调函数
-def on_message(client, userdata, msg):
-    global session_id
-    print("Received audio and response data")
-    try:
-        # 解析消息
-        message = json.loads(msg.payload)
+        frames = wf.readframes(wf.getnframes())
 
-        response_session_id = message.get("session_id")
-        audio_data_base64 = message.get("audio_reply")
-        filename = message.get("filename")
-        text_reply = message.get("text_reply")
+    # 这里返回完整的 WAV 文件字节，而不是裸 PCM
+    with open(path, "rb") as f:
+        return f.read()
 
-        if not audio_data_base64:
-            print("错误: 返回数据中缺少 audio_reply")
+
+class MqttVoiceClient:
+    def __init__(
+        self,
+        broker_host: str,
+        broker_port: int,
+        device_sn: str,
+        timeout: int = 30,
+    ) -> None:
+        self._broker_host = broker_host
+        self._broker_port = broker_port
+        self._device_sn = device_sn
+        self._timeout = timeout
+
+        self._client = mqtt.Client(
+            client_id=f"test-client-{int(time.time())}",
+            clean_session=True,
+        )
+
+        self._reply_event = threading.Event()
+        self._reply_bytes: Optional[bytes] = None
+
+        self._client.on_connect = self._on_connect
+        self._client.on_message = self._on_message
+
+
+    def _on_connect(self, client: mqtt.Client, userdata, flags, rc) -> None:  # type: ignore[override]
+        if rc == 0:
+            print(f"[MQTT] 连接成功 {self._broker_host}:{self._broker_port}")
+        else:
+            print(f"[MQTT] 连接失败 rc={rc}")
+
+    def _on_message(self, client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:  # type: ignore[override]
+        topic = msg.topic
+        payload = msg.payload
+        print(f"[MQTT] 收到消息: topic={topic}, bytes={len(payload)}")
+
+        expected_topic = f"toy/{self._device_sn}/voice/reply"
+        if topic != expected_topic:
+            print(f"[MQTT] 非预期 topic, 忽略: {topic}")
             return
 
-        # 如果没有 session_id，首次响应时获取并设置 session_id
-        if session_id is None and response_session_id:
-            session_id = response_session_id
-            print(f"首次请求返回 session_id: {session_id}")
+        self._reply_bytes = payload
+        self._reply_event.set()
 
-        # 解码音频数据
-        audio_data = base64.b64decode(audio_data_base64)
 
-        # 生成唯一的文件名并保存音频文件
-        audio_file_path = os.path.join('./received', filename)
-        with open(audio_file_path, 'wb') as f:
-            f.write(audio_data)
-        print(f"音频文件已保存: {audio_file_path}")
+    def send_and_wait_reply(self, wav_bytes: bytes) -> bytes:
+        """发送语音请求并阻塞等待回复 WAV 字节。"""
+        request_topic = f"toy/{self._device_sn}/voice/request"
+        reply_topic = f"toy/{self._device_sn}/voice/reply"
+        # 连接 broker
+        self._client.connect(self._broker_host, self._broker_port, keepalive=60)
 
-        # 打印文本回复
-        print(f"文本回复：{text_reply}")
+        # 订阅回复 topic
+        self._client.subscribe(reply_topic)
+        print(f"[MQTT] 订阅: {reply_topic}")
 
-        # 等待下一轮发送
-        send_audio_file(client)
+        # 启动网络循环线程
+        self._client.loop_start()
 
-    except Exception as e:
-        print(f"Error receiving audio and data: {e}")
+        try:
+            # 发送请求
+            print(f"[MQTT] 发布语音请求: topic={request_topic}, bytes={len(wav_bytes)}")
+            self._client.publish(request_topic, wav_bytes)
 
-# 创建 MQTT 客户端，指定使用 MQTTv5 协议
-mqtt_client = mqtt.Client(client_id=MQTT_CLIENT_ID, protocol=mqtt.MQTTv5)
+            # 等待回复
+            if not self._reply_event.wait(self._timeout):
+                raise TimeoutError(f"{self._timeout} 秒内未收到回复")
 
-# 设置回调函数
-mqtt_client.on_connect = on_connect
-mqtt_client.on_publish = on_publish
-mqtt_client.on_message = on_message
+            if self._reply_bytes is None:
+                raise RuntimeError("收到回复事件，但 payload 为空")
 
-# 连接到 MQTT 代理
-mqtt_client.connect(MQTT_BROKER, MQTT_PORT)
+            print(f"[MQTT] 收到回复字节: {len(self._reply_bytes)}")
+            return self._reply_bytes
 
-# 读取并发送音频文件
-def send_audio_file(client):
-    global session_id
-    file_path = "./source/promax.m4a"  # 请替换为实际的音频文件路径
+        finally:
+            self._client.loop_stop()
+            self._client.disconnect()
 
-    # 如果 session_id 为空，表示首次发送
-    if session_id is None:
-        session_id = ""  # 初次时空的 session_id
 
-    # 确保文件路径存在
-    if not os.path.exists(file_path):
-        print(f"文件不存在: {file_path}")
-        return
+def save_reply_wav(reply_bytes: bytes, output_dir: str, device_sn: str) -> str:
+    """把回复 WAV 字节保存成文件，文件名带时间戳。"""
+    os.makedirs(output_dir, exist_ok=True)
+    ts = int(time.time())
+    filename = f"reply_{device_sn}_{ts}.wav"
+    full_path = os.path.join(output_dir, filename)
 
-    try:
-        with open(file_path, "rb") as file:
-            file_data = file.read()  # 读取音频文件的二进制数据
-            file_data_base64 = base64.b64encode(file_data).decode('utf-8')  # 编码为Base64字符串
+    with open(full_path, "wb") as f:
+        f.write(reply_bytes)
 
-            message = {
-                "audio_data": file_data_base64,
-                "metadata": {
-                    "filename": os.path.basename(file_path),
-                    "size": len(file_data)
-                },
-                "session_id": session_id  # 将 session_id 添加到消息中
-            }
-            # 将音频数据封装在一个JSON消息中
-            result = client.publish(MQTT_TOPIC_IN, json.dumps(message))  # 发布到指定的 MQTT 主题
-            if result.rc != mqtt.MQTT_ERR_SUCCESS:
-                print(f"消息发布失败，返回码: {result.rc}")
-            else:
-                print(f"文件已成功发布，session_id: {session_id}")
-    except Exception as e:
-        print(f"文件发送失败: {e}")
+    print(f"[FILE] 已保存回复音频: {full_path}")
+    return full_path
 
-# 启动 MQTT 客户端循环，等待连接和回调
-mqtt_client.loop_start()  # 启动客户端的 MQTT 循环
 
-# 保证脚本持续运行，直到连接成功并发布消息
-while not mqtt_client.is_connected():
-    print("等待连接...")
-    time.sleep(1)
+def main() -> None:
+    parser = argparse.ArgumentParser(description="MQTT 语音对话测试客户端")
+    parser.add_argument(
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help="MQTT Broker 主机（默认：127.0.0.1）",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=1883,
+        help="MQTT Broker 端口（默认：1883）",
+    )
+    parser.add_argument(
+        "--device-sn",
+        type=str,
+        required=True,
+        help="设备序列号 device_sn（必须和服务端绑定的一致）",
+    )
+    parser.add_argument(
+        "--input-wav",
+        type=str,
+        required=True,
+        help="要发送的 WAV 文件路径（要求：16kHz/单声道/16bit）",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="./mqtt_replies",
+        help="回复 WAV 保存目录（默认：./mqtt_replies）",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=30,
+        help="等待回复超时时间（秒，默认 30）",
+    )
 
-print("MQTT 客户端已连接，准备发布文件。")
+    args = parser.parse_args()
 
-# 添加 input() 保持脚本运行，等待服务端的响应
-input("按 Enter 键退出程序...\n")
+    wav_bytes = load_and_check_wav(args.input_wav)
+    client = MqttVoiceClient(
+        broker_host=args.host,
+        broker_port=args.port,
+        device_sn=args.device_sn,
+        timeout=args.timeout,
+    )
+
+    reply_bytes = client.send_and_wait_reply(wav_bytes)
+    save_reply_wav(reply_bytes, args.output_dir, args.device_sn)
+
+
+if __name__ == "__main__":
+    main()
