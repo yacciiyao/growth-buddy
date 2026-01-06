@@ -1,9 +1,7 @@
 # -*- coding: utf-8 -*-
-# @File: init_db.py
 # @Author: yaccii
-# @Time: 2025-11-17 18:19
 # @Description:
-# init_db.py
+
 from __future__ import annotations
 
 from app.infra.db import Base, engine

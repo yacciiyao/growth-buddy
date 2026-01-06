@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-# @File: service.py
 # @Author: yaccii
-# @Time: 2025-11-17 19:24
 # @Description:
+
 from __future__ import annotations
 
 import asyncio
@@ -67,10 +66,13 @@ class MqttVoiceGateway:
 
     def _on_message(self, client: mqtt.Client, userdata, msg: mqtt.MQTTMessage) -> None:  # type: ignore[override]
         topic = msg.topic
-        payload = msg.payload
-        ylogger.info("Received MQTT message: topic=%s, bytes=%s", topic, len(payload))
+        raw_payload = msg.payload
+        if isinstance(raw_payload, (bytes, bytearray)):
+            payload_bytes = bytes(raw_payload)
+        else:
+            payload_bytes = str(raw_payload).encode("utf-8")
+        ylogger.info("Received MQTT message: topic=%s, bytes=%s", topic, len(payload_bytes))
 
-        # 期望 topic: toy/{device_sn}/voice/request
         parts = topic.split("/")
         if len(parts) != 4 or parts[0] != "toy" or parts[2] != "voice" or parts[3] != "request":
             ylogger.warning("Ignore message with unexpected topic: %s", topic)
@@ -80,7 +82,7 @@ class MqttVoiceGateway:
 
         db = SessionLocal()
         try:
-            wav_bytes = payload
+            wav_bytes: bytes = payload_bytes
             ylogger.info("Handling voice turn: device_sn=%s, wav_bytes=%s", device_sn, len(wav_bytes))
 
             result = asyncio.run(

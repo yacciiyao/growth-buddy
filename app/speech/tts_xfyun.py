@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-# @File: tts_xfyun.py
 # @Author: yaccii
-# @Time: 2025-11-17 17:51
 # @Description:
+
 from __future__ import annotations
 
 import base64
@@ -11,10 +10,11 @@ import hmac
 import json
 import ssl
 import threading
+import certifi
 from dataclasses import dataclass
 from datetime import datetime
 from time import mktime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Callable
 from urllib.parse import urlencode
 
 import websocket
@@ -32,7 +32,7 @@ class _TtsResult:
 
 def _build_ws_url(app_id: str, api_key: str, api_secret: str) -> str:
     """
-    构造讯飞 TTS WebSocket URL。
+    构造讯飞 TTS WebSocket URL
     """
     host = "ws-api.xfyun.cn"
     path = "/v2/tts"
@@ -68,7 +68,7 @@ def _build_ws_url(app_id: str, api_key: str, api_secret: str) -> str:
 
 class XfyunTtsClient:
     """
-    讯飞 TTS 客户端，只负责合成。
+    讯飞 TTS 客户端，只负责合成
     """
 
     def __init__(
@@ -83,7 +83,7 @@ class XfyunTtsClient:
         self._api_secret = api_secret
         self._sslopt = sslopt or {"cert_reqs": ssl.CERT_NONE}
 
-    def synthesize(self, text: str, timeout: int = 30) -> bytes:
+    def synthesize(self, text: str, timeout: int = 30, should_cancel: Optional[Callable[[], bool]] = None) -> bytes:
         """
         同步合成：
         - 输入：文本
@@ -96,6 +96,10 @@ class XfyunTtsClient:
 
         def on_message(ws: websocket.WebSocketApp, message: str) -> None:
             try:
+                if should_cancel is not None and bool(should_cancel()):
+                    done_event.set()
+                    ws.close()
+                    return
                 data = json.loads(message)
                 code = data.get("code", -1)
                 if code != 0:
@@ -189,3 +193,115 @@ class XfyunTtsClient:
         pcm += b"\x00" * 32000
 
         return pcm
+
+
+    def synthesize_stream(
+        self,
+        text: str,
+        *,
+        on_chunk: Callable[[bytes], None],
+        should_cancel: Optional[Callable[[], bool]] = None,
+        timeout: int = 30,
+        tail_silence_ms: int = 120,
+    ) -> None:
+        """
+        流式合成：
+        - on_chunk(pcm_bytes) 会在收到每个音频分片时被调用
+        - 适用于“边合成边播放”的低延迟链路
+        说明：该方法为同步阻塞实现，建议上层用 asyncio.to_thread 包装
+        """
+        ws_url = _build_ws_url(self._app_id, self._api_key, self._api_secret)
+
+        result = _TtsResult()
+        done_event = threading.Event()
+
+        def on_message(ws: websocket.WebSocketApp, message: str) -> None:
+            try:
+                if should_cancel is not None and bool(should_cancel()):
+                    done_event.set()
+                    ws.close()
+                    return
+                data = json.loads(message)
+                code = data.get("code", -1)
+                if code != 0:
+                    result.error = data.get("message") or f"xfyun tts error code={code}"
+                    done_event.set()
+                    ws.close()
+                    return
+
+                audio_b64 = data.get("data", {}).get("audio")
+                status = data.get("data", {}).get("status")
+
+                if audio_b64:
+                    chunk = base64.b64decode(audio_b64)
+                    if chunk:
+                        try:
+                            on_chunk(chunk)
+                        except Exception:  # noqa: BLE001
+                            # 回调异常不应影响 WebSocket 主循环：记录错误并终止
+                            result.error = "on_chunk 回调失败"
+                            done_event.set()
+                            ws.close()
+                            return
+
+                if status == 2:
+                    done_event.set()
+                    ws.close()
+
+            except Exception as e:  # noqa: BLE001
+                ylogger.exception("TTS on_message 异常: %s", e)
+                result.error = str(e)
+                done_event.set()
+                ws.close()
+
+        def on_error(ws: websocket.WebSocketApp, error: Exception) -> None:
+            ylogger.error("TTS WebSocket 错误: %s", error)
+            result.error = str(error)
+            done_event.set()
+
+        def on_open(ws: websocket.WebSocketApp) -> None:
+            if should_cancel is not None and bool(should_cancel()):
+                done_event.set()
+                ws.close()
+                return
+            # 发送合成请求
+            payload = {
+                "common": {"app_id": self._app_id},
+                "business": {
+                    "aue": "raw",
+                    "auf": "audio/L16;rate=16000",
+                    "vcn": "xiaoyan",
+                    "tte": "utf8",
+                },
+                "data": {
+                    "status": 2,
+                    "text": base64.b64encode(text.encode("utf-8")).decode("utf-8"),
+                },
+            }
+            ws.send(json.dumps(payload))
+
+        ws = websocket.WebSocketApp(
+            ws_url,
+            on_message=on_message,
+            on_error=on_error,
+            on_open=on_open,
+        )
+
+        ws_thread = threading.Thread(
+            target=ws.run_forever,
+            kwargs={"sslopt": {"cert_reqs": ssl.CERT_REQUIRED, "ca_certs": certifi.where()}},
+            daemon=True,
+        )
+        ws_thread.start()
+
+        if not done_event.wait(timeout=timeout):
+            ws.close()
+            raise SpeechError("讯飞 TTS 超时")
+
+        if result.error:
+            raise SpeechError(result.error)
+
+        # 附加尾部静音（避免设备播报尾部被截断）
+        if tail_silence_ms > 0:
+            silence = b"\x00\x00" * int(16000 * (tail_silence_ms / 1000.0))
+            on_chunk(silence)

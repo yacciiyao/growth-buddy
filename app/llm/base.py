@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-# @File: base.py
 # @Author: yaccii
-# @Time: 2025-11-17 17:40
-# @Description: 抽象基类 + ChatMessage 类型
+# @Description:
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -12,7 +11,7 @@ ChatMessage = Mapping[str, str]
 
 
 class LlmProvider(ABC):
-    """统一的大模型调用接口。"""
+    """统一的大模型调用接口"""
 
     name: str
 

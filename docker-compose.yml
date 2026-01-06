@@ -1,0 +1,26 @@
+version: '3.9'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: growth_buddy_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: growth_buddy
+      TZ: Asia/Shanghai
+    ports:
+      - '3306:3306'
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
+    volumes:
+      - growth_buddy_mysql:/var/lib/mysql
+    healthcheck:
+      test: ['CMD-SHELL', 'mysqladmin ping -h 127.0.0.1 -uroot -proot --silent']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  growth_buddy_mysql:

@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-# @File: deepseek_provider.py
 # @Author: yaccii
-# @Time: 2025-11-17 17:40
 # @Description:
+
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +14,7 @@ from app.llm.base import ChatMessage, LlmProvider
 
 
 class DeepSeekProvider(LlmProvider):
-    """基于 DeepSeek OpenAI-兼容接口的实现。"""
+    """基于 DeepSeek OpenAI-兼容接口的实现"""
 
     name = "deepseek"
 

@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-# @File: schemas.py
 # @Author: yaccii
-# @Time: 2025-11-17 17:10
 # @Description:
+
 from __future__ import annotations
 
 from typing import List, Optional
@@ -11,8 +10,6 @@ from pydantic import BaseModel, Field
 
 
 class ParentSetupRequest(BaseModel):
-    email: str = Field(..., description="家长邮箱（账号标识）")
-
     child_name: str = Field(..., description="儿童姓名或昵称")
     child_age: int = Field(..., ge=0, le=18, description="儿童年龄")
     child_gender: str = Field(..., description="儿童性别：boy / girl / other")
@@ -54,7 +51,8 @@ class ParentSetupResponse(BaseModel):
 
 class ChildProfile(BaseModel):
     parent_id: int
-    parent_email: str
+    parent_phone: str
+    parent_email: Optional[str] = None
 
     child_id: int
     child_name: str
@@ -153,3 +151,39 @@ class SessionTurnsResponse(BaseModel):
     child_id: int
     device_sn: str
     turns: List[TurnDetail]
+
+
+# Auth
+
+
+class SendCodeRequest(BaseModel):
+    phone: str = Field(..., pattern=r"^1\d{10}$", description="手机号（中国大陆 11 位）")
+    scene: str = Field("login", description="场景：login / register")
+
+
+class SendCodeResponse(BaseModel):
+    sent: bool = True
+    ttl: int = Field(..., description="验证码有效期（秒）")
+
+
+class PhoneCodeRequest(BaseModel):
+    phone: str = Field(..., pattern=r"^1\d{10}$", description="手机号")
+    code: str = Field(..., min_length=4, max_length=10, description="短信验证码")
+
+
+class TokenPairResponse(BaseModel):
+    token_type: str = "bearer"
+    access_token: str
+    refresh_token: str
+    expires_in: int = Field(..., description="access_token 剩余有效期（秒）")
+    refresh_expires_in: int = Field(..., description="refresh_token 剩余有效期（秒）")
+    parent_id: int
+    phone: str
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(..., description="refresh_token")
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str = Field(..., description="refresh_token")

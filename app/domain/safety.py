@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-# @File: safety.py
 # @Author: yaccii
-# @Time: 2025-11-17 17:18
 # @Description:
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -12,11 +11,11 @@ from typing import Iterable, List, Optional, Set
 @dataclass
 class SafetyViolation(Exception):
     """
-    文本安全检查不通过时抛出的异常。
+    文本安全检查不通过时抛出的异常
 
     type: "input"  表示儿童输入不合规
           "output" 表示模型回复不合规
-    reason: 具体原因描述（给日志/监控看，不直接暴露给儿童）
+    reason: 具体原因描述（日志监控）
     """
 
     type: str
@@ -52,14 +51,13 @@ _BASE_MODEL_REPLY_FORBIDDEN: Set[str] = {
 
 
 def _normalize(text: str) -> str:
-    # 简单归一化：去两端空格
     return text.strip()
 
 
 def _merge_forbidden(base: Set[str], extra: Optional[Iterable[str]]) -> Set[str]:
     """
-    合并基础敏感词 + 家长自定义禁止话题。
-    extra 可以为 None。
+    合并基础敏感词 + 家长自定义禁止话题
+    extra 可以为 None
     """
     if not extra:
         return base
@@ -86,7 +84,7 @@ def check_child_input(
     max_length: int = 200,
 ) -> None:
     """
-    儿童输入文本安全检查。
+    儿童输入文本安全检查
 
     - 空字符串：直接通过（由上层决定是否提示“再说一遍”）
     - 长度过长：抛 SafetyViolation(type="input", ...)
@@ -118,7 +116,7 @@ def check_reply_output(
     max_length: int = 400,
 ) -> None:
     """
-    模型回复文本安全检查。
+    模型回复文本安全检查
 
     - 空字符串：视为异常（抛 SafetyViolation(type="output"...）方便上层走兜底话术）
     - 长度过长：抛 SafetyViolation(type="output"...）

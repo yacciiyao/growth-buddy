@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
-# @File: asr_xfyun.py
 # @Author: yaccii
-# @Time: 2025-11-17 17:51
 # @Description:
+
 from __future__ import annotations
 
 import base64
@@ -27,22 +26,23 @@ from app.infra.ylogger import ylogger
 
 
 class AudioFormatError(Exception):
-    """音频格式不符合要求时抛出。"""
+    """音频格式不符合要求时抛出"""
 
 
 class SpeechError(Exception):
-    """ASR/TTS 调用失败时抛出。"""
+    """ASR/TTS 调用失败时抛出"""
 
 
 @dataclass
 class _AsrResult:
     text: str = ""
     error: Optional[str] = None
+    segments: dict[int, str] | None = None  # sn -> 文本片段
 
 
 def _build_ws_url(app_id: str, api_key: str, api_secret: str) -> str:
     """
-    构造讯飞 ASR WebSocket URL。
+    构造讯飞 ASR WebSocket URL
     """
     host = "ws-api.xfyun.cn"
     path = "/v2/iat"
@@ -77,9 +77,6 @@ def _build_ws_url(app_id: str, api_key: str, api_secret: str) -> str:
 
 
 def _extract_pcm_from_wav(wav_bytes: bytes) -> bytes:
-    """
-    从 WAV 字节中提取单声道、16k、16bit 的原始 PCM 数据。
-    """
     bio = io.BytesIO(wav_bytes)
     try:
         with wave.open(bio, "rb") as wf:
@@ -99,10 +96,6 @@ def _extract_pcm_from_wav(wav_bytes: bytes) -> bytes:
 
 
 class XfyunAsrClient:
-    """
-    讯飞 ASR 客户端，只负责识别。
-    """
-
     def __init__(
         self,
         app_id: str,
@@ -124,7 +117,7 @@ class XfyunAsrClient:
         pcm_bytes = _extract_pcm_from_wav(wav_bytes)
         ws_url = _build_ws_url(self._app_id, self._api_key, self._api_secret)
 
-        result = _AsrResult()
+        result = _AsrResult(segments={})
         done_event = threading.Event()
 
         def on_message(ws: websocket.WebSocketApp, message: str) -> None:
@@ -141,11 +134,33 @@ class XfyunAsrClient:
                     ws.close()
                     return
 
-                result_data = data.get("data", {}).get("result", {}).get("ws", [])
-                for seg in result_data:
-                    for cw in seg.get("cw", []):
-                        w = cw.get("w") or ""
-                        result.text += w
+                result_dict = data.get("data", {}).get("result", {}) or {}
+                sn = int(result_dict.get("sn", 0))
+                pgs = result_dict.get("pgs")
+                rg = result_dict.get("rg")
+
+                ws_segs = result_dict.get("ws", []) or []
+                piece = "".join(
+                    (cw.get("w") or "")
+                    for seg in ws_segs
+                    for cw in (seg.get("cw") or [])
+                )
+
+                if result.segments is None:
+                    result.segments = {}
+
+                # 讯飞 IAT：pgs='rpl' 表示替换模式，rg 给出需要替换的 sn 范围。
+                if pgs == "rpl" and isinstance(rg, (list, tuple)) and len(rg) == 2:
+                    try:
+                        rg0, rg1 = int(rg[0]), int(rg[1])
+                        for k in list(result.segments.keys()):
+                            if rg0 <= k <= rg1:
+                                result.segments.pop(k, None)
+                    except Exception:  # noqa: BLE001
+                        pass
+
+                result.segments[sn] = piece
+                result.text = "".join(result.segments[k] for k in sorted(result.segments))
             except Exception as e:  # noqa: BLE001
                 ylogger.exception("ASR on_message 异常: %s", e)
                 result.error = str(e)

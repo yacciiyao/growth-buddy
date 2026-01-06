@@ -1,13 +1,10 @@
 # -*- coding: utf-8 -*-
-# @File: client.py
 # @Author: yaccii
-# @Time: 2025-11-17 13:52
 # @Description:
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
+
 """
 模拟智能玩具终端，通过 MQTT 发送一段语音给 Smart Buddy 服务器，
-并接收回复语音，保存为本地 WAV 文件。
+并接收回复语音，保存为本地 WAV 文件
 
 使用前先确认：
 1）服务端 MQTT 网关已启动（run_mqtt_gateway.py）
@@ -27,7 +24,7 @@ import paho.mqtt.client as mqtt
 
 
 def load_and_check_wav(path: str) -> bytes:
-    """读取 WAV 文件并校验为 16k / 单声道 / 16bit。"""
+    """读取 WAV 文件并校验为 16k / 单声道 / 16bit"""
     if not os.path.exists(path):
         raise FileNotFoundError(f"WAV 文件不存在: {path}")
 
@@ -96,7 +93,7 @@ class MqttVoiceClient:
 
 
     def send_and_wait_reply(self, wav_bytes: bytes) -> bytes:
-        """发送语音请求并阻塞等待回复 WAV 字节。"""
+        """发送语音请求并阻塞等待回复 WAV 字节"""
         request_topic = f"toy/{self._device_sn}/voice/request"
         reply_topic = f"toy/{self._device_sn}/voice/reply"
         # 连接 broker
@@ -130,7 +127,7 @@ class MqttVoiceClient:
 
 
 def save_reply_wav(reply_bytes: bytes, output_dir: str, device_sn: str) -> str:
-    """把回复 WAV 字节保存成文件，文件名带时间戳。"""
+    """把回复 WAV 字节保存成文件，文件名带时间戳"""
     os.makedirs(output_dir, exist_ok=True)
     ts = int(time.time())
     filename = f"reply_{device_sn}_{ts}.wav"
